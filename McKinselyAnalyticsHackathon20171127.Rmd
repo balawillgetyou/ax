@@ -1,0 +1,151 @@
+---
+title: "McKinsey Analytics Online Hackathon"
+author: "Bala Kesavan"
+date: "18 November 2017, edited"
+output:
+  word_document: default
+  html_document: default
+---
+#Summary  
+The contest requires prediction of traffic at four different junctions in a smart city. This analysis is an attempt to do so.   
+  
+#Data exploration   
+The graphical exploration conducted is reproduced below. Numerical checks were also done. Some of them are commented below.  
+```{r warning=FALSE, message=FALSE}
+library(forecast)
+library(tseries)
+library(ggplot2)
+
+setwd('/home/bala/Documents/Hackathon')
+McKTrainData = read.csv('train_aWnotuB.csv')
+
+# head(McKTrainData)
+# tail(McKTrainData)
+# McKTrainData[1:25,]
+# str(McKTrainData)
+# table(McKTrainData$Junction)
+
+```
+  
+##The four junctions need different prediction models  
+As seen below, the traffic patterns are very different.  
+```{r}
+McKTrainData$DateTime1 <- as.POSIXct(McKTrainData$DateTime, format="%Y-%m-%d %H:%M:%S")
+ggplot(McKTrainData, aes((DateTime1), Vehicles)) + geom_line() + scale_x_datetime('month') + 
+  ylab('Hourly traffic') + xlab("") + facet_grid(.~Junction) + theme(axis.text.x = element_text(angle=60, hjust = 1))
+```
+  
+##Junction 1 is explored further in these graphs  
+  
+```{r}
+#subset data from junction 1 to probe/ understand dataset
+McKTrainData1 = McKTrainData[McKTrainData$Junction==1,]
+#junction1, full dataset
+ggplot(McKTrainData1, aes((DateTime1), Vehicles)) + geom_line() + scale_x_datetime('month') + 
+  ylab('Hourly traffic') + xlab("") + ggtitle("Junction1, full dataset")
+#junction1, first year
+ggplot(McKTrainData1[0:(24*7*52),], aes((DateTime1), Vehicles)) + geom_line() + scale_x_datetime('month') + 
+  ylab('Hourly traffic') + xlab("") + ggtitle("Junction1, first year")
+#junction1, second 4 weeks
+ggplot(McKTrainData1[(24*7*4):((24*7*4)+(24*7*4)),], aes((DateTime1), Vehicles)) + geom_line() + scale_x_datetime('month') + 
+  ylab('Hourly traffic') + xlab("") + ggtitle("Junction1, week 5 to 8")
+#junction1, first week
+ggplot(McKTrainData1[0:(24*7),], aes((DateTime1), Vehicles)) + geom_line() + scale_x_datetime('month') + 
+  ylab('Hourly traffic') + xlab("") + ggtitle("Junction1, first week")
+#junction1, first day
+ggplot(McKTrainData1[0:(24),], aes((DateTime1), Vehicles)) + geom_line() + scale_x_datetime('month') + 
+  ylab('Hourly traffic') + xlab("") + ggtitle("Junction1, first day")
+```
+  
+The daily and weekly graphs show clear seasonality - repetitive patterns at regular intervals. 
+
+##Moving averages  
+Calculating moving averages is the first step in deciphering signals embedded in time series data. Moving averages helps with identifying the lowest level of aggregation at which we can perform analysis and forecasting. We examine hourly, daily, weekly and monthly aggregations/ moving averages.       
+```{r warning=FALSE, message=FALSE}
+#outliers and missing values
+counts_ts = ts(McKTrainData1[,c('Vehicles')])
+McKTrainData1$clean_Vehicles = tsclean(counts_ts)
+
+#smoothing with moving averages-
+McKTrainData1$Vehicles_ma_daily = ma(McKTrainData1$clean_Vehicles, order = 24)
+McKTrainData1$Vehicles_ma_weekly = ma(McKTrainData1$clean_Vehicles, order = 24*7)
+McKTrainData1$Vehicles_ma_monthly = ma(McKTrainData1$clean_Vehicles, order = 24*7*4)
+
+ggplot()+
+  geom_line(data=McKTrainData1, aes(x=DateTime1, y=clean_Vehicles, colour="1 Hourly traffic"))+
+  geom_line(data=McKTrainData1, aes(x=DateTime1, y=Vehicles_ma_daily, colour="2 Daily Moving Avg"))+
+  geom_line(data=McKTrainData1, aes(x=DateTime1, y=Vehicles_ma_weekly, colour="3 Weekly Moving Avg"))+
+  geom_line(data=McKTrainData1, aes(x=DateTime1, y=Vehicles_ma_monthly, colour="4 Monthly Moving Avg"))+
+  ylab('Vehicles Count') + xlab('Time')
+ 
+```
+  
+We see that the hourly and daily series are very volatile. The weekly series is reasonably stable and the monthly series provides no significant improvement in volatility. Series that are very volatile are hard to work with and require defining multiple seasonality levels. So, we will work with weekly moving averages.  
+  
+##Decomposition  
+Now we convert the data into a time series and look for its key components, trend, seasonality and cycle, by decomposing the series.      
+```{r}
+Vehicles_ma_weekly = ts(na.omit(McKTrainData1$Vehicles_ma_weekly), frequency = (24*7))
+#decomposition - weekly
+decomp_weekly = stl(Vehicles_ma_weekly, s.window = 'periodic')
+plot(decomp_weekly, main = "Series Decomposition, Weekly")
+
+```
+  
+There is clearly seasonality in the weekly series. There is also an increasing trend. There is no apparent cycle, assuming the dip in Jan 2017 is not one.  
+  
+##Stationary  
+Times Series modeling requires the Series to be stationary, which is defined as mean, variance and co-variance being time invariant. Working with the weekly moving average, we see there is an increasing trend for the mean. Hence we try differencing it and find that the residual (differenced) plot has time invariant mean and variance. No claim is being made about covariance at this stage.     
+To illustrate stationarity, we also plot the weekly moving average series' exponential transformation and the residual from differencing once. The residual plot is not stationary and shows variance that depends on time.    
+Just to confirm stationarity of the "differenced weekly moving average" series, we run the Augmented Dickey-Fuller Test.   
+  
+```{r}
+par(mfrow=c(2,2))
+plot(Vehicles_ma_weekly, main = "Weekly MA, not stationary, mean increases with time", cex.main=0.75)
+
+weekly_ma_diff_1 = diff(Vehicles_ma_weekly, differences = 1)
+plot(weekly_ma_diff_1, main='Weekly MA, residuals after differencing once', cex.main=0.75)
+
+Vehicles_ma_weekly_exp = ts(na.omit(exp(McKTrainData1$Vehicles_ma_weekly)), frequency = (24*7))
+plot(Vehicles_ma_weekly_exp, main = "Weekly MA, exponentiated, not stationary, mean & variance change with time", cex.main=0.65)
+
+weekly_ma_diff_1_exp = diff(exp(Vehicles_ma_weekly), differences = 1)
+plot(weekly_ma_diff_1_exp, main='Weekly MA, exponentiated, residuals after differencing once, not stationary', cex.main=0.65)
+
+adf.test((weekly_ma_diff_1))
+
+```
+  
+Due to the low p-value in the Augmented Dickey-Fuller Test, the null hypothesis of non-stationarity has to be rejected.
+  
+##Looking for patterns   
+The idea behind time series analysis and forecasting is that any reading, traffic in this case, depends on prior readings. This relationship to prior readings has two components. Auto Regressive (AR) - directly the influence of the prior readings. Moving Average (MA) - the influence of the prior periods' errors. Using the Auto Correlation Factor (ACF) and the Partial Auto Correlation Factor (PACF) plots of the differenced weekly moving average series, we see that there AR (parameter p in an ARIMA model) and MA (parameter q) components to be discovered in the residuals. The ACF plot shows auto correlation with prior lags. Depending on how this is addressed, there may remain a dependence between the error terms, as seen in the PACF plot.    
+```{r}
+par(mfrow=c(1,2))
+Acf(weekly_ma_diff_1, main='ACF, weekly MA')
+Pacf(weekly_ma_diff_1, main='PACF, weekly MA')
+```
+  
+
+  
+##ARIMA model training   
+We leverage the algorithm's ability to discover the optimal Auto Regression(p and P), Integration(d and D), Moving Averages (q and Q) parameters. The P, D and Q being the seasonal parameters. We pick the model with the best AIC, BIC scores.     
+For simplicity, we model de-seasonal series by subtracting the seasonal components from the original series.          
+```{r cache=TRUE}
+deseasonal_cnt_weekly = seasadj(decomp_weekly)
+fit_w_seasonality_weekly = auto.arima(deseasonal_cnt_weekly, seasonal = T)
+fit_w_seasonality_weekly
+
+```
+
+##Evaluating the model  
+We forecast, plot the forecast and examine the residuals, Auto Correlation Function and Partial Auto Correlation Function for all the models. The residuals show no pattern and are in a tight band around zero. This is good. The ACF and PACF plots show that patterns in the data are substantially accounted for, as seen in how much smaller the bars are and how few of them exceed the blue significance zone. Although, it appears that there is more pattern information left at lag 9, 10 etc. that can be accounted for in the ARIMA model parameters.    
+```{r}
+seas_fcast_weekly <- forecast(fit_w_seasonality_weekly, h=24*30*4)
+plot(seas_fcast_weekly, main="Forecast from weekly series")
+tsdisplay(residuals(seas_fcast_weekly), lag.max = 30, main = 'Weekly, ARIMA(5,1,4) with drift Model Residuals')
+
+```
+  
+##Conclusion  
+This document is meant to demonstrate approach and the same can be extended to build statistically sound, well tuned models for all four junctions.
